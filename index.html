@@ -1246,62 +1246,120 @@ function doExp(onlySel){
 //  ubic/pulmon: string numérico o '' (no contado)
 // ================================================================
 
-var cteoUbicActiva = null; // ubicacion string actualmente visible
+var cteoUbicActiva = null;
 
 // Inicializa entrada de conteo si no existe
 function cteoInit(cod) {
   if (!cteo[cod]) cteo[cod] = { ubic: '', pulmon: '', sis: null };
 }
 
-// Devuelve los artículos de una ubicación, ordenados por criticidad
+// ================================================================
+//  LOGICA CENTRAL DE CRITICIDAD
+//  Devuelve objeto con toda la info de riesgo de un artículo
+// ================================================================
+function cteoCriticidad(r) {
+  cteoInit(r.codigo);
+  var c = cteo[r.codigo];
+  var sis      = c.sis;                                        // stock sistema
+  var contUbic = c.ubic !== '' ? (parseInt(c.ubic)||0) : null; // contado ubicacion
+  var contPul  = r.ubicacion_pulmon
+                   ? (c.pulmon !== '' ? (parseInt(c.pulmon)||0) : null)
+                   : null;                                     // contado pulmon (null = no aplica o no contado)
+
+  // Stock sistema por separado: ubicacion y pulmon
+  // Por ahora sis es el total; cuando haya split real usar sis_ubic / sis_pulmon
+  var sisTotal = sis !== null ? sis : null;
+  var total80  = sisTotal !== null ? sisTotal >= 80 : false;
+
+  // Diferencia ubicacion
+  var diffUbic = (contUbic !== null && sis !== null) ? (contUbic - sis) : null;
+
+  // Diferencia pulmon (solo si fue contado)
+  var diffPul  = (contPul !== null && r.ubicacion_pulmon) ? contPul : null; // referencia futura
+
+  // Pickeo en 0: sistema dice 0 pero hubo movimientos (por ahora: sis === 0)
+  var pickeoEn0 = sis === 0;
+
+  // Negativo en sistema
+  var negativo = sis !== null && sis < 0;
+
+  // Diferencia en ubicacion (cualquier valor distinto)
+  var hayDiffUbic = diffUbic !== null && diffUbic !== 0;
+
+  // Diferencia en pulmon > 5
+  var hayDiffPulGrande = contPul !== null && r.ubicacion_pulmon &&
+                         Math.abs(contPul - (sisTotal||0)) > 5;
+
+  // Diferencia en pulmon <= 5
+  var hayDiffPulLeve   = contPul !== null && r.ubicacion_pulmon &&
+                         Math.abs(contPul - (sisTotal||0)) > 0 &&
+                         Math.abs(contPul - (sisTotal||0)) <= 5;
+
+  // Regla 80/20: total >= 80 y sin diferencias detectadas -> no contar
+  var regla8020 = total80 && !hayDiffUbic && !negativo && !pickeoEn0 && contUbic === null;
+
+  // Score para ordenar (mayor = más arriba)
+  var score = 0;
+  if (negativo)          score = 6;
+  else if (hayDiffUbic)  score = 5;
+  else if (pickeoEn0)    score = 4;
+  else if (hayDiffPulGrande) score = 3;
+  else if (hayDiffPulLeve)   score = 2;
+  else if (regla8020)        score = 0; // va al fondo
+  else                       score = 1;
+
+  // Nivel visual
+  var nivel;
+  if (negativo || hayDiffUbic)       nivel = 'critico';
+  else if (pickeoEn0)                nivel = 'critico';
+  else if (hayDiffPulGrande)         nivel = 'importante';
+  else if (hayDiffPulLeve)           nivel = 'leve';
+  else if (regla8020)                nivel = 'skip';
+  else if (contUbic !== null && diffUbic === 0) nivel = 'ok';
+  else                               nivel = 'normal';
+
+  return {
+    sis: sis, sisTotal: sisTotal,
+    contUbic: contUbic, contPul: contPul,
+    diffUbic: diffUbic, diffPul: diffPul,
+    negativo: negativo, pickeoEn0: pickeoEn0,
+    hayDiffUbic: hayDiffUbic,
+    hayDiffPulGrande: hayDiffPulGrande,
+    hayDiffPulLeve: hayDiffPulLeve,
+    regla8020: regla8020,
+    total80: total80,
+    score: score, nivel: nivel
+  };
+}
+
+// Devuelve artículos de una ubicación ordenados por criticidad
 function cteoGetArticulos(ubic) {
   var arts = ALL.filter(function(r) {
-    return (r.ubicacion === ubic) && !globalDisabledMarcas[r.marca] && !adminCfg.disabledCodigos[r.codigo];
+    return r.ubicacion === ubic &&
+           !globalDisabledMarcas[r.marca] &&
+           !adminCfg.disabledCodigos[r.codigo];
   });
-
-  // Score de criticidad para ordenar: mayor score = más arriba
-  function criticScore(r) {
-    var c = cteo[r.codigo];
-    // Si ya fue contado y tiene diferencia: top prioridad
-    if (c && c.ubic !== '' && c.sis !== null) {
-      var cu = parseInt(c.ubic)||0;
-      var cp = r.ubicacion_pulmon ? (c.pulmon !== '' ? parseInt(c.pulmon)||0 : 0) : 0;
-      if ((cu+cp) !== c.sis) return 4;
-    }
-    if (!c || c.sis === null) return 2; // sin stock: medio
-    if (c.sis < 0) return 3;           // negativo: crítico (error de sistema)
-    if (c.sis > 0 && c.sis <= 5) return 2; // bajo: revisar
-    // stock 0 = sin mercadería, no hay nada que contar
-    if (c.sis === 0) return 0;
-    return 1; // normal
-  }
-
   arts.sort(function(a, b) {
-    return criticScore(b) - criticScore(a);
+    return cteoCriticidad(b).score - cteoCriticidad(a).score;
   });
   return arts;
 }
 
-// Estado de una ubicación: 'pending' | 'alert' | 'ok'
+// Estado de una ubicación para el sidebar
 function cteoUbicEstado(ubic) {
   var arts = cteoGetArticulos(ubic);
   if (!arts.length) return 'pending';
-  var alguno = false;
-  var hayAlerta = false;
+  var alguno = false, hayAlerta = false, todoOk = true;
   arts.forEach(function(r) {
-    var c = cteo[r.codigo];
-    if (!c) return;
-    var contUbic = c.ubic !== '' ? (parseInt(c.ubic) || 0) : null;
-    var contPul  = r.ubicacion_pulmon ? (c.pulmon !== '' ? (parseInt(c.pulmon) || 0) : null) : 0;
-    if (contUbic !== null) alguno = true;
-    if (c.sis !== null && contUbic !== null) {
-      var totalCont = contUbic + (contPul !== null ? contPul : 0);
-      if (totalCont !== c.sis) hayAlerta = true;
-    }
+    var cr = cteoCriticidad(r);
+    if (cr.contUbic !== null) alguno = true;
+    if (cr.nivel === 'critico' || cr.nivel === 'importante') hayAlerta = true;
+    if (cr.nivel !== 'ok' && cr.nivel !== 'skip') todoOk = false;
   });
   if (!alguno) return 'pending';
   if (hayAlerta) return 'alert';
-  return 'ok';
+  if (todoOk) return 'ok';
+  return 'parcial';
 }
 
 // Render sidebar de ubicaciones
@@ -1348,8 +1406,11 @@ function renderCteoSidebar() {
     var estado = cteoUbicEstado(u);
     var arts = cteoGetArticulos(u);
     var contados = arts.filter(function(r) { return cteo[r.codigo] && cteo[r.codigo].ubic !== ''; }).length;
-    var badgeClass = estado === 'alert' ? 'has-alert' : estado === 'ok' ? 'complete' : '';
-    var badgeTxt = estado === 'alert' ? '⚠ diferencia' : estado === 'ok' ? '✓ ok' : contados + '/' + arts.length;
+    var badgeClass = (estado==='alert') ? 'has-alert' : (estado==='ok') ? 'complete' : '';
+    var badgeTxt   = (estado==='alert') ? '&#9650; diferencia'
+                   : (estado==='ok')    ? '&#10003; ok'
+                   : (estado==='parcial') ? '&#9888; parcial'
+                   : contados+'/'+arts.length;
     var isActive = u === cteoUbicActiva;
     html += '<div class="cteo-ubic-item' + (isActive ? ' active' : '') + '" onclick="cteoSelectUbic(\'' + esc(u) + '\')">' +
       '<div class="cteo-ubic-name">' + renderUbic(u, dep) + '</div>' +
@@ -1369,145 +1430,182 @@ function cteoSelectUbic(ubic) {
 // Render panel principal de conteo para una ubicación
 function renderCteoPanel(ubic) {
   var panel = document.getElementById('cteo-main-panel');
-  var arts = cteoGetArticulos(ubic);
+  var arts  = cteoGetArticulos(ubic);
+  var conPulmon = arts.filter(function(r){ return !!r.ubicacion_pulmon; });
 
-  // Artículos con pulmón
-  var conPulmon = arts.filter(function(r) { return !!r.ubicacion_pulmon; });
-
-  // Calcular totales
-  var totalSis = 0, totalCont = 0, contadoAlguno = false;
-  arts.forEach(function(r) {
-    cteoInit(r.codigo);
-    var c = cteo[r.codigo];
-    if (c.sis !== null) totalSis += c.sis;
-    if (c.ubic !== '') {
-      contadoAlguno = true;
-      totalCont += parseInt(c.ubic) || 0;
-    }
-    if (r.ubicacion_pulmon && c.pulmon !== '') {
-      totalCont += parseInt(c.pulmon) || 0;
-    }
+  // Contadores resumen
+  var nCriticos=0, nImportantes=0, nSkip=0, nOk=0, totalCont=0, alguno=false;
+  arts.forEach(function(r){
+    var cr = cteoCriticidad(r);
+    if(cr.nivel==='critico')    nCriticos++;
+    if(cr.nivel==='importante') nImportantes++;
+    if(cr.nivel==='skip')       nSkip++;
+    if(cr.nivel==='ok')         nOk++;
+    if(cr.contUbic!==null){ alguno=true; totalCont+=cr.contUbic; }
+    if(cr.contPul!==null)  totalCont+=cr.contPul;
   });
 
-  var hayDiscrepancia = contadoAlguno && arts.some(function(r) {
-    var c = cteo[r.codigo];
-    if (!c || c.sis === null) return false;
-    var cu = c.ubic !== '' ? (parseInt(c.ubic) || 0) : null;
-    var cp = r.ubicacion_pulmon ? (c.pulmon !== '' ? (parseInt(c.pulmon) || 0) : 0) : 0;
-    return cu !== null && (cu + cp) !== c.sis;
-  });
-
-  // Banner de estado
+  // Banner
   var bannerHtml = '';
-  if (contadoAlguno) {
-    if (hayDiscrepancia) {
-      bannerHtml = '<div class="cteo-alert-banner disc">' +
-        '<span style="font-size:18px;flex-shrink:0">&#9888;&#65039;</span>' +
-        '<div><strong>Hay diferencias detectadas.</strong> Revis&#225; los art&#237;culos marcados en naranja antes de procesar el faltante.</div>' +
+  if(alguno){
+    if(nCriticos>0){
+      bannerHtml='<div class="cteo-alert-banner disc">'+
+        '<span style="font-size:18px;flex-shrink:0">&#9888;</span>'+
+        '<div><strong>'+nCriticos+' art&#237;culo'+(nCriticos>1?'s':'')+' con diferencia cr&#237;tica.</strong>'+
+        (nImportantes?' Adem&#225;s '+nImportantes+' con diferencia en pulm&#243;n.':'')+
+        ' Verific&#225; antes de procesar el faltante.</div>'+
+      '</div>';
+    } else if(nImportantes>0){
+      bannerHtml='<div class="cteo-alert-banner disc" style="background:#fff7ed;border-color:#fed7aa">'+
+        '<span style="font-size:18px;flex-shrink:0">&#128230;</span>'+
+        '<div><strong>'+nImportantes+' art&#237;culo'+(nImportantes>1?'s':'')+' con diferencia en pulm&#243;n &gt; 5 unidades.</strong> Cont&#225; el pulm&#243;n.</div>'+
       '</div>';
     } else {
-      bannerHtml = '<div class="cteo-alert-banner ok">' +
-        '<span style="font-size:18px;flex-shrink:0">&#9989;</span>' +
-        '<div><strong>Todo coincide.</strong> El conteo de esta ubicaci&#243;n est&#225; OK.</div>' +
+      bannerHtml='<div class="cteo-alert-banner ok">'+
+        '<span style="font-size:18px;flex-shrink:0">&#9989;</span>'+
+        '<div><strong>Todo coincide.</strong> El conteo de esta ubicaci&#243;n est&#225; OK.'+
+        (nSkip?' ('+nSkip+' omitidos por regla 80/20)':'')+
+        '</div>'+
       '</div>';
     }
   }
 
-  // Tabla de artículos — ubicación principal
-  function renderFilas(lista, esPulmon) {
-    var html = '';
-    lista.forEach(function(r) {
-      cteoInit(r.codigo);
-      var c = cteo[r.codigo];
-      var campo = esPulmon ? 'pulmon' : 'ubic';
-      var val = c[campo];
-      var contNum = val !== '' ? (parseInt(val) || 0) : null;
-      var sis = c.sis;
-      var diff = null;
-      if (!esPulmon && sis !== null && contNum !== null) {
-        var cp = r.ubicacion_pulmon ? (c.pulmon !== '' ? (parseInt(c.pulmon) || 0) : 0) : 0;
-        diff = (contNum + cp) - sis;
-      }
-      var diffHtml;
-      if (!esPulmon) {
-        if (diff === null) diffHtml = '<span class="cteo-diff empty">\u2014</span>';
-        else if (diff === 0) diffHtml = '<span class="cteo-diff zero">= 0</span>';
-        else if (diff < 0) diffHtml = '<span class="cteo-diff neg">' + diff + '</span>';
-        else diffHtml = '<span class="cteo-diff pos">+' + diff + '</span>';
-      } else {
-        diffHtml = '';
-      }
-      var isAlert = !esPulmon && diff !== null && diff !== 0;
-      // Indicador visual de criticidad
-      var negativo = !esPulmon && sis !== null && sis < 0;   // error de sistema
-      var bajo     = !esPulmon && sis !== null && sis > 0 && sis <= 5;
-      var rowClass = isAlert  ? ' class="alert-row"'
-                   : negativo ? ' style="background:#fff1f2"'
-                   : bajo     ? ' style="background:#fffbeb"'
-                   : '';
-      var critIcon = isAlert  ? '<span title="Diferencia detectada" style="color:#dc2626;font-size:10px;margin-left:4px">&#9650;</span>'
-                   : negativo ? '<span title="Stock negativo - error de sistema" style="color:#dc2626;font-size:10px;margin-left:4px">&#9679;</span>'
-                   : bajo     ? '<span title="Stock bajo" style="color:#f59e0b;font-size:10px;margin-left:4px">&#9679;</span>'
-                   : '';
-      html += '<tr' + rowClass + '>' +
-        '<td class="tdc">' + r.codigo + critIcon + '</td>' +
-        '<td class="tdd" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + trunc(r.marca || '', 28) + '</td>' +
-        (esPulmon ? '<td>' + renderUbic(r.ubicacion_pulmon, dep) + '</td>' : '') +
-        '<td style="text-align:center">' + (sis !== null ? '<div style="display:flex;flex-direction:column;align-items:center;gap:3px"><span style="font-family:\'DM Mono\',monospace;font-weight:700">' + sis + '</span>' + renderSem(r.codigo) + '</div>' : '<span style="color:#cbd5e1">—</span>') + '</td>' +
-        '<td style="text-align:center"><input class="cteo-inp' + (val !== '' ? ' filled' : '') + '" type="number" min="0" value="' + val + '" placeholder="—" ' +
-          'oninput="cteoSet(\'' + esc(r.codigo) + '\',\'' + campo + '\',this.value)" ' +
-          'onfocus="this.select()" onclick="event.stopPropagation()"></td>' +
-        (!esPulmon ? '<td style="text-align:center">' + diffHtml + '</td>' : '<td></td>') +
-      '</tr>';
-    });
-    return html;
+  // Render fila individual
+  function renderFila(r, esPulmon) {
+    var cr    = cteoCriticidad(r);
+    var campo = esPulmon ? 'pulmon' : 'ubic';
+    var val   = cteo[r.codigo][campo];
+    var sis   = cr.sis;
+
+    // Diferencia a mostrar
+    var diff = null, diffHtml = '';
+    if(!esPulmon && cr.contUbic !== null && sis !== null){
+      diff = cr.contUbic - sis;
+    }
+    if(esPulmon && cr.contPul !== null && sis !== null){
+      diff = cr.contPul - sis;
+    }
+    if(diff !== null){
+      if(diff===0)      diffHtml='<span class="cteo-diff zero">= 0</span>';
+      else if(diff<0)   diffHtml='<span class="cteo-diff neg">'+diff+'</span>';
+      else              diffHtml='<span class="cteo-diff pos">+'+diff+'</span>';
+    } else {
+      diffHtml='<span class="cteo-diff empty">&#8212;</span>';
+    }
+
+    // Estilos por nivel
+    var nivelStyle = {
+      critico:    'background:#fff1f2',
+      importante: 'background:#fff7ed',
+      leve:       'background:#fffbeb',
+      skip:       'background:#f8fafc;opacity:.6',
+      ok:         'background:#f0fdf4',
+      normal:     ''
+    };
+    var nivelIcon = {
+      critico:    '<span style="display:inline-flex;align-items:center;gap:3px;background:#fee2e2;color:#dc2626;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#9650; DIFERENCIA</span>',
+      importante: '<span style="display:inline-flex;align-items:center;gap:3px;background:#fed7aa;color:#c2410c;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#128230; PULMON</span>',
+      leve:       '<span style="display:inline-flex;align-items:center;gap:3px;background:#fef9c3;color:#a16207;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#9888; LEVE</span>',
+      skip:       '<span style="display:inline-flex;align-items:center;gap:3px;background:#f1f5f9;color:#94a3b8;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px">80/20</span>',
+      ok:         '<span style="display:inline-flex;align-items:center;gap:3px;background:#dcfce7;color:#15803d;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#10003; OK</span>',
+      normal:     ''
+    };
+
+    var nivel = esPulmon
+      ? (cr.hayDiffPulGrande ? 'importante' : cr.hayDiffPulLeve ? 'leve' : cr.contPul!==null?'ok':'normal')
+      : cr.nivel;
+
+    var rowStyle = nivelStyle[nivel]||'';
+    var icon     = nivelIcon[nivel]||'';
+
+    // Semáforo
+    var semHtml = renderSem(r.codigo);
+
+    // Input
+    var inputHtml = '<input class="cteo-inp'+(val!==''?' filled':'')+'" type="number" min="0" value="'+val+'" placeholder="\u2014" '+
+      'oninput="cteoSet(''+esc(r.codigo)+'',''+campo+'',this.value)" '+
+      'onfocus="this.select()" onclick="event.stopPropagation()"'+(cr.regla8020&&!esPulmon?' title="80/20: omitir si no hay diferencias"':'')+' style="'+(cr.regla8020&&val===''?'opacity:.5':'')+'">';
+
+    return '<tr style="'+rowStyle+'">'+
+      '<td class="tdc">'+r.codigo+icon+'</td>'+
+      '<td class="tdd" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+trunc(r.marca||'',24)+'</td>'+
+      (esPulmon?'<td>'+renderUbic(r.ubicacion_pulmon,dep)+'</td>':'')+
+      '<td style="text-align:center"><div style="display:flex;flex-direction:column;align-items:center;gap:2px">'+
+        '<span style="font-family:'DM Mono',monospace;font-weight:800;font-size:13px">'+(sis!==null?sis:'&#8212;')+'</span>'+
+        semHtml+
+      '</div></td>'+
+      '<td style="text-align:center">'+inputHtml+'</td>'+
+      '<td style="text-align:center">'+diffHtml+'</td>'+
+    '</tr>';
   }
 
-  var tablaHtml = '<div class="cteo-table-wrap"><table class="cteo-table">' +
-    '<thead><tr>' +
-      '<th>C&#243;digo</th><th>Marca</th>' +
-      '<th class="num">Stock<br>Sistema</th>' +
-      '<th class="num">Contado<br>Ubic.</th>' +
-      '<th class="num">Diferencia</th>' +
-    '</tr></thead><tbody>' +
-    renderFilas(arts, false) +
-    '</tbody></table></div>';
+  // Separador de sección con conteo
+  function sectionSep(label, count, colorClass) {
+    return '<tr><td colspan="6" style="padding:5px 12px;background:#f1f5f9;font-size:10px;font-weight:800;color:'+colorClass+';text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border)">'+label+(count?' ('+count+')':'')+'</td></tr>';
+  }
 
-  // Sección pulmón
+  // Agrupar artículos por nivel para la tabla
+  var criticos   = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='critico'; });
+  var importantes= arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='importante'; });
+  var leves      = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='leve'; });
+  var normales   = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='normal'||n==='ok'; });
+  var skips      = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='skip'; });
+
+  var tbody = '';
+  if(criticos.length)    tbody += sectionSep('&#9650; Diferencias criticas',criticos.length,'#dc2626')   + criticos.map(function(r){return renderFila(r,false);}).join('');
+  if(importantes.length) tbody += sectionSep('&#128230; Diferencia en pulmon',importantes.length,'#c2410c') + importantes.map(function(r){return renderFila(r,false);}).join('');
+  if(leves.length)       tbody += sectionSep('&#9888; Diferencia leve',leves.length,'#a16207')            + leves.map(function(r){return renderFila(r,false);}).join('');
+  if(normales.length)    tbody += sectionSep('&#10003; Sin diferencias',normales.length,'#15803d')         + normales.map(function(r){return renderFila(r,false);}).join('');
+  if(skips.length)       tbody += sectionSep('80/20 - Omitir',skips.length,'#94a3b8')                     + skips.map(function(r){return renderFila(r,false);}).join('');
+
+  var tablaHtml = '<div class="cteo-table-wrap"><table class="cteo-table">'+
+    '<thead><tr>'+
+      '<th>C&#243;digo</th><th>Marca</th>'+
+      '<th class="num">Stock<br>Sistema</th>'+
+      '<th class="num">Contado</th>'+
+      '<th class="num">Diferencia</th>'+
+    '</tr></thead><tbody>'+tbody+'</tbody></table></div>';
+
+  // Sección pulmón (solo artículos que tengan ubicacion_pulmon)
   var pulmonHtml = '';
-  if (conPulmon.length) {
-    pulmonHtml = '<div class="cteo-section-sep">&#128230; Pulmón — conteo de unidades en depósito auxiliar</div>' +
-      '<div class="cteo-table-wrap"><table class="cteo-table">' +
-      '<thead><tr>' +
-        '<th>C&#243;digo</th><th>Marca</th><th>Ubic. Pulm&#243;n</th>' +
-        '<th class="num">Stock Pulmón</th>' +
-        '<th class="num">Contado</th>' +
-        '<th></th>' +
-      '</tr></thead><tbody>' +
-      renderFilas(conPulmon, true) +
-      '</tbody></table></div>';
+  if(conPulmon.length){
+    var pulmonTbody = conPulmon.map(function(r){ return renderFila(r,true); }).join('');
+    pulmonHtml = '<div class="cteo-section-sep">&#128230; Pulm&#243;n &mdash; contar solo si hay diferencia &gt; 5 unidades</div>'+
+      '<div class="cteo-table-wrap"><table class="cteo-table">'+
+      '<thead><tr>'+
+        '<th>C&#243;digo</th><th>Marca</th><th>Ubic. Pulm&#243;n</th>'+
+        '<th class="num">Stock Sis.</th>'+
+        '<th class="num">Contado</th>'+
+        '<th class="num">Diferencia</th>'+
+      '</tr></thead><tbody>'+pulmonTbody+'</tbody></table></div>';
   }
 
-  // Resumen pie
-  var resumenHtml = '<div class="cteo-summary">' +
-    '<div class="cteo-sum-item"><span class="cteo-sum-lbl">Art&#237;culos:</span><span class="cteo-sum-val">' + arts.length + '</span></div>' +
-    '<div class="cteo-sum-item"><span class="cteo-sum-lbl">Con pulm&#243;n:</span><span class="cteo-sum-val">' + conPulmon.length + '</span></div>' +
-    (contadoAlguno ? '<div class="cteo-sum-item"><span class="cteo-sum-lbl">Total contado:</span><span class="cteo-sum-val" style="color:var(--blue)">' + totalCont + '</span></div>' : '') +
-    '<div style="margin-left:auto;display:flex;gap:8px">' +
-      '<button class="btn" style="font-size:11px" onclick="cteoCerrarPanel()">&#8592; Volver</button>' +
-      '<button class="btn btn-b" style="font-size:11px" onclick="expCUbic(\'' + esc(ubic) + '\')">&#11015; Exportar esta ubic.</button>' +
-    '</div>' +
+  // Resumen
+  var resumenHtml = '<div class="cteo-summary">'+
+    (nCriticos   ?'<div class="cteo-sum-item"><span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:5px;font-weight:800;font-size:11px">'+nCriticos+' cr&#237;ticos</span></div>':'')+
+    (nImportantes?'<div class="cteo-sum-item"><span style="background:#fed7aa;color:#c2410c;padding:2px 8px;border-radius:5px;font-weight:800;font-size:11px">'+nImportantes+' pulm&#243;n</span></div>':'')+
+    (nSkip       ?'<div class="cteo-sum-item"><span style="background:#f1f5f9;color:#64748b;padding:2px 8px;border-radius:5px;font-weight:700;font-size:11px">'+nSkip+' omitidos 80/20</span></div>':'')+
+    (nOk         ?'<div class="cteo-sum-item"><span style="background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:5px;font-weight:700;font-size:11px">'+nOk+' ok</span></div>':'')+
+    (alguno      ?'<div class="cteo-sum-item" style="margin-left:8px"><span class="cteo-sum-lbl">Total contado:</span><span class="cteo-sum-val" style="color:var(--blue)">'+totalCont+'</span></div>':'')+
+    '<div style="margin-left:auto;display:flex;gap:8px">'+
+      '<button class="btn" style="font-size:11px" onclick="cteoCerrarPanel()">&#8592; Volver</button>'+
+      '<button class="btn btn-b" style="font-size:11px" onclick="expCUbic(''+esc(ubic)+'')">&#11015; Exportar</button>'+
+    '</div>'+
   '</div>';
 
-  panel.innerHTML = '<div class="cteo-main">' +
-    '<div class="cteo-main-hdr">' +
-      '<div class="cteo-main-title">' + renderUbic(ubic, dep) + '</div>' +
-      '<div class="cteo-main-sub">' + arts.length + ' art&#237;culo' + (arts.length !== 1 ? 's' : '') + '</div>' +
-    '</div>' +
-    bannerHtml +
-    tablaHtml +
-    pulmonHtml +
-    resumenHtml +
+  panel.innerHTML = '<div class="cteo-main">'+
+    '<div class="cteo-main-hdr">'+
+      '<div class="cteo-main-title">'+renderUbic(ubic,dep)+'</div>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-left:auto">'+
+        (nCriticos?'<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:800;padding:2px 8px;border-radius:6px">'+nCriticos+' &#9650;</span>':'')+
+        (nImportantes?'<span style="background:#fed7aa;color:#c2410c;font-size:11px;font-weight:800;padding:2px 8px;border-radius:6px">'+nImportantes+' pulm&#243;n</span>':'')+
+        '<span class="cteo-main-sub">'+arts.length+' art.</span>'+
+      '</div>'+
+    '</div>'+
+    bannerHtml+
+    tablaHtml+
+    pulmonHtml+
+    resumenHtml+
   '</div>';
 }
 
