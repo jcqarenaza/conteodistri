@@ -339,6 +339,33 @@ tr.edited td{background:#fefce8}
         <button class="ibtn blu" title="Exportar CSV" onclick="expC()">&#11015;</button>
       </div>
     </div>
+    <!-- Mini-dash de criticidad -->
+    <div id="cteo-dash" style="display:none;background:#fff;border-radius:10px;padding:10px 14px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+      <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Resumen del dep&#243;sito</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="cteoDashFilter('critico')" id="dash-critico" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:2px solid #fecaca;background:#fff1f2;cursor:pointer;font-family:inherit;transition:all .15s">
+          <span style="font-size:18px;font-weight:900;color:#dc2626;font-family:monospace" id="dash-n-critico">0</span>
+          <div style="text-align:left"><div style="font-size:11px;font-weight:800;color:#dc2626">&#9650; Cr&#237;ticos</div><div style="font-size:10px;color:#f87171">diferencias detectadas</div></div>
+        </button>
+        <button onclick="cteoDashFilter('importante')" id="dash-importante" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:2px solid #fed7aa;background:#fff7ed;cursor:pointer;font-family:inherit;transition:all .15s">
+          <span style="font-size:18px;font-weight:900;color:#c2410c;font-family:monospace" id="dash-n-importante">0</span>
+          <div style="text-align:left"><div style="font-size:11px;font-weight:800;color:#c2410c">&#128230; Pulm&#243;n</div><div style="font-size:10px;color:#fb923c">diff &gt; 5 unidades</div></div>
+        </button>
+        <button onclick="cteoDashFilter('leve')" id="dash-leve" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:2px solid #fef08a;background:#fefce8;cursor:pointer;font-family:inherit;transition:all .15s">
+          <span style="font-size:18px;font-weight:900;color:#a16207;font-family:monospace" id="dash-n-leve">0</span>
+          <div style="text-align:left"><div style="font-size:11px;font-weight:800;color:#a16207">&#9888; Leves</div><div style="font-size:10px;color:#ca8a04">diff &le; 5 unidades</div></div>
+        </button>
+        <button onclick="cteoDashFilter('')" id="dash-todos" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:2px solid var(--border);background:#f8fafc;cursor:pointer;font-family:inherit;transition:all .15s">
+          <span style="font-size:18px;font-weight:900;color:var(--muted);font-family:monospace" id="dash-n-todos">0</span>
+          <div style="text-align:left"><div style="font-size:11px;font-weight:800;color:var(--text)">Todas</div><div style="font-size:10px;color:var(--muted)">ubicaciones</div></div>
+        </button>
+        <button onclick="cteoDashFilter('skip')" id="dash-skip" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:2px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-family:inherit;transition:all .15s">
+          <span style="font-size:18px;font-weight:900;color:#94a3b8;font-family:monospace" id="dash-n-skip">0</span>
+          <div style="text-align:left"><div style="font-size:11px;font-weight:800;color:#64748b">80/20</div><div style="font-size:10px;color:#94a3b8">omitir</div></div>
+        </button>
+      </div>
+    </div>
+
     <div class="cteo-layout">
       <div class="cteo-sidebar">
         <div class="cteo-sidebar-hdr">
@@ -1005,6 +1032,7 @@ function setD(d) {
   // Cargar stock demo automáticamente
   if(typeof loadStockDemo === 'function') {
     loadStockDemo();
+    if(typeof renderDash==='function') renderDash();
     renderCteoSidebar();
   }
 }
@@ -1046,7 +1074,7 @@ function swTab(t) {
     if(tb) tb.classList.toggle('on',id===t);
     if(pn) pn.classList.toggle('on',id===t);
   });
-  if(t==='c'&&dep) { renderCteoSidebar(); if(cteoUbicActiva) renderCteoPanel(cteoUbicActiva); }
+  if(t==='c'&&dep) { if(typeof renderDash==='function') renderDash(); renderCteoSidebar(); if(cteoUbicActiva) renderCteoPanel(cteoUbicActiva); }
 }
 
 function fillUbicSels() {
@@ -1392,6 +1420,14 @@ function renderCteoSidebar() {
   // Filtrar solo pendientes (no 'ok')
   if (soloPend) ubics = ubics.filter(function(u) { return cteoUbicEstado(u) !== 'ok'; });
 
+  // Filtrar por nivel activo del dash
+  if (cteoDashFiltroActivo) {
+    ubics = ubics.filter(function(u) {
+      var arts = cteoGetArticulos(u);
+      return arts.some(function(r){ return cteoCriticidad(r).nivel === cteoDashFiltroActivo; });
+    });
+  }
+
   var el = document.getElementById('cteo-ubic-list');
   var cnt = document.getElementById('cteo-ubic-count');
   if (cnt) cnt.textContent = ubics.length + ' ubic.';
@@ -1522,8 +1558,8 @@ function renderCteoPanel(ubic) {
     var semHtml = renderSem(r.codigo);
 
     // Input
-    var inputHtml = '<input class="cteo-inp'+(val!==''?' filled':'')+'" type="number" min="0" value="'+val+'" placeholder="\u2014" '+
-      'oninput="cteoSet(''+esc(r.codigo)+'',''+campo+'',this.value)" '+
+    var inputHtml = '<input class="cteo-inp'+(val!==''?' filled':'')+'" type="number" min="0" value="'+val+'" placeholder="—" '+
+      'oninput="cteoSet(\'' + esc(r.codigo) + '\',\'' + campo + '\',this.value)" '+
       'onfocus="this.select()" onclick="event.stopPropagation()"'+(cr.regla8020&&!esPulmon?' title="80/20: omitir si no hay diferencias"':'')+' style="'+(cr.regla8020&&val===''?'opacity:.5':'')+'">';
 
     return '<tr style="'+rowStyle+'">'+
@@ -1531,7 +1567,7 @@ function renderCteoPanel(ubic) {
       '<td class="tdd" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+trunc(r.marca||'',24)+'</td>'+
       (esPulmon?'<td>'+renderUbic(r.ubicacion_pulmon,dep)+'</td>':'')+
       '<td style="text-align:center"><div style="display:flex;flex-direction:column;align-items:center;gap:2px">'+
-        '<span style="font-family:'DM Mono',monospace;font-weight:800;font-size:13px">'+(sis!==null?sis:'&#8212;')+'</span>'+
+        '<span style="font-family:monospace;font-weight:800;font-size:13px">'+(sis!==null?sis:'&#8212;')+'</span>'+
         semHtml+
       '</div></td>'+
       '<td style="text-align:center">'+inputHtml+'</td>'+
@@ -1589,7 +1625,7 @@ function renderCteoPanel(ubic) {
     (alguno      ?'<div class="cteo-sum-item" style="margin-left:8px"><span class="cteo-sum-lbl">Total contado:</span><span class="cteo-sum-val" style="color:var(--blue)">'+totalCont+'</span></div>':'')+
     '<div style="margin-left:auto;display:flex;gap:8px">'+
       '<button class="btn" style="font-size:11px" onclick="cteoCerrarPanel()">&#8592; Volver</button>'+
-      '<button class="btn btn-b" style="font-size:11px" onclick="expCUbic(''+esc(ubic)+'')">&#11015; Exportar</button>'+
+      '<button class="btn btn-b" style="font-size:11px" onclick="expCUbic(\'' + esc(ubic) + '\')" >&#11015; Exportar</button>'+
     '</div>'+
   '</div>';
 
@@ -2450,29 +2486,32 @@ function editSisSingle(cod, val) {
 // ================================================================
 //  PATCH swAdminTab
 // ================================================================
-var _origSwAdminTab=swAdminTab;
-swAdminTab=function(tab){
-  var extras=['stock','movimientos'];
-  if(extras.indexOf(tab)>=0){
-    ['marcas','codigos','aoki','minmax','alertas','stock','movimientos'].forEach(function(t){
-      var p=document.getElementById('adm-panel-'+t);
-      var b=document.getElementById('adm-tab-'+t);
-      if(p) p.style.display='none';
-      if(b) b.classList.remove('on');
+// Extender swAdminTab para los tabs extra (stock, movimientos)
+// Se hace via override seguro después de que el original ya está definido
+var _swAdminTabOrig = swAdminTab;
+swAdminTab = function(tab) {
+  var extras = ['stock','movimientos'];
+  var allTabs = ['marcas','codigos','aoki','minmax','alertas','stock','movimientos'];
+  if (extras.indexOf(tab) >= 0) {
+    allTabs.forEach(function(t) {
+      var p = document.getElementById('adm-panel-'+t);
+      var b = document.getElementById('adm-tab-'+t);
+      if (p) p.style.display = 'none';
+      if (b) b.classList.remove('on');
     });
-    var panel=document.getElementById('adm-panel-'+tab);
-    var btn=document.getElementById('adm-tab-'+tab);
-    if(panel) panel.style.display='block';
-    if(btn) btn.classList.add('on');
-    if(tab==='stock') renderAdminStockList();
-    if(tab==='movimientos') renderMovimientos();
+    var panel = document.getElementById('adm-panel-'+tab);
+    var btn   = document.getElementById('adm-tab-'+tab);
+    if (panel) panel.style.display = 'block';
+    if (btn)   btn.classList.add('on');
+    if (tab === 'stock')       renderAdminStockList();
+    if (tab === 'movimientos') renderMovimientos();
   } else {
-    _origSwAdminTab(tab);
-    ['stock','movimientos'].forEach(function(t){
-      var p=document.getElementById('adm-panel-'+t);
-      var b=document.getElementById('adm-tab-'+t);
-      if(p) p.style.display='none';
-      if(b) b.classList.remove('on');
+    _swAdminTabOrig(tab);
+    ['stock','movimientos'].forEach(function(t) {
+      var p = document.getElementById('adm-panel-'+t);
+      var b = document.getElementById('adm-tab-'+t);
+      if (p) p.style.display = 'none';
+      if (b) b.classList.remove('on');
     });
   }
 };
@@ -2515,6 +2554,70 @@ function loadStockDemo() {
 }
 // Cargar demo cuando esté listo
 document.addEventListener('DOMContentLoaded', function() { loadStockDemo(); });
+
+
+// ================================================================
+//  MINI-DASH DE CRITICIDAD
+// ================================================================
+var cteoDashFiltroActivo = ''; // '' = todos, 'critico', 'importante', 'leve', 'skip'
+
+function calcDash() {
+  // Calcular cuántas ubicaciones tienen cada nivel de criticidad
+  var contadores = { critico:0, importante:0, leve:0, skip:0, todos:0 };
+  var vistas = {};
+  ALL.forEach(function(r) {
+    if (!r.ubicacion) return;
+    var u = r.ubicacion.trim();
+    if (!u || u.length < 2 || /^\d+$/.test(u) || u.endsWith('.') || u === '0') return;
+    if (!vistas[u]) vistas[u] = { critico:false, importante:false, leve:false, skip:false };
+    var cr = cteoCriticidad(r);
+    if (cr.nivel === 'critico')    vistas[u].critico    = true;
+    if (cr.nivel === 'importante') vistas[u].importante = true;
+    if (cr.nivel === 'leve')       vistas[u].leve       = true;
+    if (cr.nivel === 'skip')       vistas[u].skip       = true;
+  });
+  Object.keys(vistas).forEach(function(u) {
+    contadores.todos++;
+    if (vistas[u].critico)    contadores.critico++;
+    if (vistas[u].importante && !vistas[u].critico) contadores.importante++;
+    if (vistas[u].leve && !vistas[u].critico && !vistas[u].importante) contadores.leve++;
+    if (vistas[u].skip && !vistas[u].critico && !vistas[u].importante && !vistas[u].leve) contadores.skip++;
+  });
+  return contadores;
+}
+
+function renderDash() {
+  var dash = document.getElementById('cteo-dash');
+  if (!dash || !dep) return;
+  dash.style.display = 'block';
+  var c = calcDash();
+  document.getElementById('dash-n-critico').textContent    = c.critico;
+  document.getElementById('dash-n-importante').textContent = c.importante;
+  document.getElementById('dash-n-leve').textContent       = c.leve;
+  document.getElementById('dash-n-todos').textContent      = c.todos;
+  document.getElementById('dash-n-skip').textContent       = c.skip;
+  // Highlight active filter
+  ['critico','importante','leve','skip','todos'].forEach(function(k) {
+    var btn = document.getElementById('dash-'+k);
+    if (!btn) return;
+    var isActive = cteoDashFiltroActivo === (k==='todos'?'':k);
+    btn.style.opacity   = isActive ? '1' : '0.75';
+    btn.style.transform = isActive ? 'scale(1.03)' : '';
+    btn.style.boxShadow = isActive ? '0 0 0 2px var(--blue)' : '';
+  });
+}
+
+function cteoDashFilter(nivel) {
+  cteoDashFiltroActivo = nivel;
+  renderDash();
+  renderCteoSidebar();
+  // Si hay una ubicación activa que no matchea, cerrar el panel
+  if (cteoUbicActiva) {
+    var arts = cteoGetArticulos(cteoUbicActiva);
+    var match = nivel === '' || arts.some(function(r){ return cteoCriticidad(r).nivel === nivel; });
+    if (!match) cteoCerrarPanel();
+  }
+}
 
 </script>
 </body></html>
