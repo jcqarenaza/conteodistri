@@ -1312,10 +1312,15 @@ function cteoCriticidad(r) {
   // Negativo en sistema = error real, imposible fisicamente
   var negativo = sis !== null && sis < 0;
 
-  // Diferencia en ubicacion (cualquier valor distinto)
-  var hayDiffUbic = diffUbic !== null && diffUbic !== 0;
+  // Diferencia en ubicacion: SOLO si fue contado y difiere
+  var hayDiffUbic = contUbic !== null && diffUbic !== null && diffUbic !== 0;
 
-  // Diferencia en pulmon > 5
+  // Negativo en sistema Y ya fue contado → crítico confirmado
+  // Negativo en sistema sin contar → alerta de sistema (no bloquea, pero se muestra)
+  var negativoContado = negativo && contUbic !== null;
+  var negativoSinContar = negativo && contUbic === null;
+
+  // Diferencia en pulmon > 5 (solo si fue contado)
   var hayDiffPulGrande = contPul !== null && r.ubicacion_pulmon &&
                          Math.abs(contPul - (sisTotal||0)) > 5;
 
@@ -1324,28 +1329,27 @@ function cteoCriticidad(r) {
                          Math.abs(contPul - (sisTotal||0)) > 0 &&
                          Math.abs(contPul - (sisTotal||0)) <= 5;
 
-  // Regla 80/20: total >= 80 y sin diferencias detectadas -> no contar
-  var regla8020 = total80 && !hayDiffUbic && !negativo && !pickeoEn0 && contUbic === null;
+  // Regla 80/20: total >= 80, sin diferencias detectadas, sin contar
+  var regla8020 = total80 && !hayDiffUbic && !negativoContado && contUbic === null;
 
   // Score para ordenar (mayor = más arriba)
   var score = 0;
-  if (negativo)          score = 6;
-  else if (hayDiffUbic)  score = 5;
-  else if (pickeoEn0)    score = 4;
-  else if (hayDiffPulGrande) score = 3;
-  else if (hayDiffPulLeve)   score = 2;
-  else if (regla8020)        score = 0; // va al fondo
-  else                       score = 1;
+  if (hayDiffUbic || negativoContado) score = 6;
+  else if (negativoSinContar)         score = 5; // negativo sin contar: visible pero no bloqueante
+  else if (hayDiffPulGrande)          score = 3;
+  else if (hayDiffPulLeve)            score = 2;
+  else if (regla8020)                 score = 0;
+  else                                score = 1;
 
-  // Nivel visual
+  // Nivel visual — CRITICO solo si hay diferencia real (contado ≠ sistema)
   var nivel;
-  if (negativo || hayDiffUbic)       nivel = 'critico';
-  else if (pickeoEn0)                nivel = 'critico';
-  else if (hayDiffPulGrande)         nivel = 'importante';
-  else if (hayDiffPulLeve)           nivel = 'leve';
-  else if (regla8020)                nivel = 'skip';
+  if (hayDiffUbic || negativoContado)  nivel = 'critico';   // diferencia confirmada
+  else if (negativoSinContar)          nivel = 'negativo';  // aviso de sistema, sin contar
+  else if (hayDiffPulGrande)           nivel = 'importante';
+  else if (hayDiffPulLeve)             nivel = 'leve';
+  else if (regla8020)                  nivel = 'skip';
   else if (contUbic !== null && diffUbic === 0) nivel = 'ok';
-  else                               nivel = 'normal';
+  else                                 nivel = 'normal';
 
   return {
     sis: sis, sisTotal: sisTotal,
@@ -1490,10 +1494,11 @@ function renderCteoPanel(ubic) {
   var conPulmon = arts.filter(function(r){ return !!r.ubicacion_pulmon; });
 
   // Contadores resumen
-  var nCriticos=0, nImportantes=0, nSkip=0, nOk=0, totalCont=0, alguno=false;
+  var nCriticos=0, nNegativos=0, nImportantes=0, nSkip=0, nOk=0, totalCont=0, alguno=false;
   arts.forEach(function(r){
     var cr = cteoCriticidad(r);
     if(cr.nivel==='critico')    nCriticos++;
+    if(cr.nivel==='negativo')   nNegativos++;
     if(cr.nivel==='importante') nImportantes++;
     if(cr.nivel==='skip')       nSkip++;
     if(cr.nivel==='ok')         nOk++;
@@ -1550,6 +1555,7 @@ function renderCteoPanel(ubic) {
     // Estilos por nivel
     var nivelStyle = {
       critico:    'background:#fff1f2',
+      negativo:   'background:#fdf4ff',
       importante: 'background:#fff7ed',
       leve:       'background:#fffbeb',
       skip:       'background:#f8fafc;opacity:.6',
@@ -1558,6 +1564,7 @@ function renderCteoPanel(ubic) {
     };
     var nivelIcon = {
       critico:    '<span style="display:inline-flex;align-items:center;gap:3px;background:#fee2e2;color:#dc2626;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#9650; DIFERENCIA</span>',
+      negativo:   '<span style="display:inline-flex;align-items:center;gap:3px;background:#f3e8ff;color:#7e22ce;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#9888; SIS. NEG.</span>',
       importante: '<span style="display:inline-flex;align-items:center;gap:3px;background:#fed7aa;color:#c2410c;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#128230; PULMON</span>',
       leve:       '<span style="display:inline-flex;align-items:center;gap:3px;background:#fef9c3;color:#a16207;font-size:10px;font-weight:800;padding:1px 5px;border-radius:4px;margin-left:4px">&#9888; LEVE</span>',
       skip:       '<span style="display:inline-flex;align-items:center;gap:3px;background:#f1f5f9;color:#94a3b8;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px">80/20</span>',
@@ -1565,24 +1572,12 @@ function renderCteoPanel(ubic) {
       normal:     ''
     };
 
-    // Nivel para semaforo: basado en diferencia real, no en stock del sistema
-    // sis=0 sin conteo = no contar (normal), no critico
+    // Nivel de la fila — DIFERENCIA solo si hay conteo y difiere del sistema
     var nivel;
     if(esPulmon){
       nivel = cr.hayDiffPulGrande ? 'importante' : cr.hayDiffPulLeve ? 'leve' : cr.contPul!==null ? 'ok' : 'normal';
     } else {
-      // Si hay diferencia detectada (contado ≠ sistema) → critico
-      if(cr.hayDiffUbic)      nivel = 'critico';
-      // Negativo en sistema → critico
-      else if(cr.negativo)    nivel = 'critico';
-      // 80/20
-      else if(cr.regla8020)   nivel = 'skip';
-      // Contado y coincide → ok
-      else if(cr.contUbic !== null && diff === 0) nivel = 'ok';
-      // Sin contar, stock 0 → normal (no hay nada que contar)
-      else if(sis === 0)      nivel = 'normal';
-      // Sin contar, stock positivo → normal
-      else                    nivel = 'normal';
+      nivel = cr.nivel; // viene de cteoCriticidad con la logica correcta
     }
 
     var rowStyle = nivelStyle[nivel]||'';
@@ -1618,17 +1613,19 @@ function renderCteoPanel(ubic) {
 
   // Agrupar artículos por nivel para la tabla
   var criticos   = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='critico'; });
+  var negativos  = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='negativo'; });
   var importantes= arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='importante'; });
   var leves      = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='leve'; });
   var normales   = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='normal'||n==='ok'; });
   var skips      = arts.filter(function(r){ var n=cteoCriticidad(r).nivel; return n==='skip'; });
 
   var tbody = '';
-  if(criticos.length)    tbody += sectionSep('&#9650; Diferencias criticas',criticos.length,'#dc2626')   + criticos.map(function(r){return renderFila(r,false);}).join('');
-  if(importantes.length) tbody += sectionSep('&#128230; Diferencia en pulmon',importantes.length,'#c2410c') + importantes.map(function(r){return renderFila(r,false);}).join('');
-  if(leves.length)       tbody += sectionSep('&#9888; Diferencia leve',leves.length,'#a16207')            + leves.map(function(r){return renderFila(r,false);}).join('');
-  if(normales.length)    tbody += sectionSep('&#10003; Sin diferencias',normales.length,'#15803d')         + normales.map(function(r){return renderFila(r,false);}).join('');
-  if(skips.length)       tbody += sectionSep('80/20 - Omitir',skips.length,'#94a3b8')                     + skips.map(function(r){return renderFila(r,false);}).join('');
+  if(criticos.length)    tbody += sectionSep('&#9650; Diferencias confirmadas',criticos.length,'#dc2626')       + criticos.map(function(r){return renderFila(r,false);}).join('');
+  if(negativos.length)   tbody += sectionSep('&#9888; Stock negativo en sistema (contar)',negativos.length,'#9d174d') + negativos.map(function(r){return renderFila(r,false);}).join('');
+  if(importantes.length) tbody += sectionSep('&#128230; Diferencia en pulmon &gt; 5',importantes.length,'#c2410c')   + importantes.map(function(r){return renderFila(r,false);}).join('');
+  if(leves.length)       tbody += sectionSep('&#9888; Diferencia leve &le; 5',leves.length,'#a16207')               + leves.map(function(r){return renderFila(r,false);}).join('');
+  if(normales.length)    tbody += sectionSep('&#10003; Sin diferencias',normales.length,'#15803d')                  + normales.map(function(r){return renderFila(r,false);}).join('');
+  if(skips.length)       tbody += sectionSep('80/20 &mdash; Omitir',skips.length,'#94a3b8')                         + skips.map(function(r){return renderFila(r,false);}).join('');
 
   var tablaHtml = '<div class="cteo-table-wrap"><table class="cteo-table">'+
     '<thead><tr>'+
