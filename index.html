@@ -1562,13 +1562,15 @@ function renderCteoPanel(ubic) {
       'oninput="cteoSet(\'' + esc(r.codigo) + '\',\'' + campo + '\',this.value)" '+
       'onfocus="this.select()" onclick="event.stopPropagation()"'+(cr.regla8020&&!esPulmon?' title="80/20: omitir si no hay diferencias"':'')+' style="'+(cr.regla8020&&val===''?'opacity:.5':'')+'">';
 
+    // Solo mostrar semáforo si hay criticidad real (no en filas normales/ok/skip)
+    var mostrarSem = (nivel==='critico'||nivel==='importante'||nivel==='leve');
     return '<tr style="'+rowStyle+'">'+
       '<td class="tdc">'+r.codigo+icon+'</td>'+
       '<td class="tdd" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+trunc(r.marca||'',24)+'</td>'+
       (esPulmon?'<td>'+renderUbic(r.ubicacion_pulmon,dep)+'</td>':'')+
       '<td style="text-align:center"><div style="display:flex;flex-direction:column;align-items:center;gap:2px">'+
         '<span style="font-family:monospace;font-weight:800;font-size:13px">'+(sis!==null?sis:'&#8212;')+'</span>'+
-        semHtml+
+        (mostrarSem?semHtml:'')+
       '</div></td>'+
       '<td style="text-align:center">'+inputHtml+'</td>'+
       '<td style="text-align:center">'+diffHtml+'</td>'+
