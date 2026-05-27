@@ -319,10 +319,10 @@ tr.edited td{background:#fefce8}
     <h2 style="font-size:20px;font-weight:800;color:var(--text);margin-bottom:8px">Seleccion&#225; un dep&#243;sito primero</h2>
     <p style="font-size:13px;margin-bottom:20px">El conteo de stock se organiza por ubicaci&#243;n.</p>
     <div class="dep-btns">
-      <button class="dep-btn BA" onclick="swTab('u');setD('BA')">&#127970; Bs As</button>
-      <button class="dep-btn RO" onclick="swTab('u');setD('RO')">&#127807; Rosario</button>
-      <button class="dep-btn PI" onclick="swTab('u');setD('PI')">&#9968; Pico</button>
-      <button class="dep-btn MDP" onclick="swTab('u');setD('MDP')">&#127754; Mar del Plata</button>
+      <button class="dep-btn BA" onclick="setD('BA')">&#127970; Bs As</button>
+      <button class="dep-btn RO" onclick="setD('RO')">&#127807; Rosario</button>
+      <button class="dep-btn PI" onclick="setD('PI')">&#9968; Pico</button>
+      <button class="dep-btn MDP" onclick="setD('MDP')">&#127754; Mar del Plata</button>
     </div>
   </div>
   <div id="cmain" style="display:none">
@@ -1262,15 +1262,17 @@ function cteoGetArticulos(ubic) {
   // Score de criticidad para ordenar: mayor score = más arriba
   function criticScore(r) {
     var c = cteo[r.codigo];
-    if (!c || c.sis === null) return 2; // sin stock cargado: medio
-    if (c.sis <= 0) return 4;           // negativo o cero: máxima alerta
-    if (c.sis <= 5) return 3;           // stock bajo: crítico
-    // Si ya fue contado y tiene diferencia: muy crítico
-    if (c.ubic !== '') {
+    // Si ya fue contado y tiene diferencia: top prioridad
+    if (c && c.ubic !== '' && c.sis !== null) {
       var cu = parseInt(c.ubic)||0;
       var cp = r.ubicacion_pulmon ? (c.pulmon !== '' ? parseInt(c.pulmon)||0 : 0) : 0;
-      if ((cu+cp) !== c.sis) return 5;  // diferencia detectada: top
+      if ((cu+cp) !== c.sis) return 4;
     }
+    if (!c || c.sis === null) return 2; // sin stock: medio
+    if (c.sis < 0) return 3;           // negativo: crítico (error de sistema)
+    if (c.sis > 0 && c.sis <= 5) return 2; // bajo: revisar
+    // stock 0 = sin mercadería, no hay nada que contar
+    if (c.sis === 0) return 0;
     return 1; // normal
   }
 
@@ -1437,12 +1439,15 @@ function renderCteoPanel(ubic) {
       }
       var isAlert = !esPulmon && diff !== null && diff !== 0;
       // Indicador visual de criticidad
-      var critico = !esPulmon && sis !== null && (sis <= 0);
-      var bajo    = !esPulmon && sis !== null && (sis > 0 && sis <= 5);
-      var rowClass = isAlert ? ' class="alert-row"' : (critico ? ' style="background:#fff1f2"' : bajo ? ' style="background:#fffbeb"' : '');
-      var critIcon = critico ? '<span title="Stock 0 o negativo" style="color:#dc2626;font-size:10px;margin-left:4px">&#9679;</span>'
-                   : bajo    ? '<span title="Stock bajo" style="color:#f59e0b;font-size:10px;margin-left:4px">&#9679;</span>'
-                   : isAlert ? '<span title="Diferencia detectada" style="color:#dc2626;font-size:10px;margin-left:4px">&#9650;</span>'
+      var negativo = !esPulmon && sis !== null && sis < 0;   // error de sistema
+      var bajo     = !esPulmon && sis !== null && sis > 0 && sis <= 5;
+      var rowClass = isAlert  ? ' class="alert-row"'
+                   : negativo ? ' style="background:#fff1f2"'
+                   : bajo     ? ' style="background:#fffbeb"'
+                   : '';
+      var critIcon = isAlert  ? '<span title="Diferencia detectada" style="color:#dc2626;font-size:10px;margin-left:4px">&#9650;</span>'
+                   : negativo ? '<span title="Stock negativo - error de sistema" style="color:#dc2626;font-size:10px;margin-left:4px">&#9679;</span>'
+                   : bajo     ? '<span title="Stock bajo" style="color:#f59e0b;font-size:10px;margin-left:4px">&#9679;</span>'
                    : '';
       html += '<tr' + rowClass + '>' +
         '<td class="tdc">' + r.codigo + critIcon + '</td>' +
