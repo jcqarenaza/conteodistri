@@ -1305,10 +1305,11 @@ function cteoCriticidad(r) {
   // Diferencia pulmon (solo si fue contado)
   var diffPul  = (contPul !== null && r.ubicacion_pulmon) ? contPul : null; // referencia futura
 
-  // Pickeo en 0: sistema dice 0 pero hubo movimientos (por ahora: sis === 0)
-  var pickeoEn0 = sis === 0;
+  // Pickeo en 0: cuando el sistema tiene stock pero quedó en 0 tras movimientos
+  // Por ahora solo marcamos negativos como error real; sis===0 = sin mercaderia, no contar
+  var pickeoEn0 = false; // se activará cuando tengamos historial de movimientos real
 
-  // Negativo en sistema
+  // Negativo en sistema = error real, imposible fisicamente
   var negativo = sis !== null && sis < 0;
 
   // Diferencia en ubicacion (cualquier valor distinto)
@@ -1410,8 +1411,24 @@ function renderCteoSidebar() {
     if (!vistas[u]) { vistas[u] = 0; }
     vistas[u]++;
   });
+  // Calcular score de criticidad por ubicación
+  var ubicScores = {};
+  Object.keys(vistas).forEach(function(u) {
+    var arts = ALL.filter(function(r){ return r.ubicacion === u; });
+    var score = 0, nCrit = 0, nImp = 0;
+    arts.forEach(function(r){
+      var cr = cteoCriticidad(r);
+      if(cr.nivel==='critico')    { score+=10; nCrit++; }
+      if(cr.nivel==='importante') { score+=5;  nImp++;  }
+      if(cr.nivel==='leve')       score+=2;
+    });
+    ubicScores[u] = { score:score, nCrit:nCrit, nImp:nImp };
+  });
+
   ubics = Object.keys(vistas).sort(function(a, b) {
-    return a.localeCompare(b, 'es', { numeric: true });
+    var sa = ubicScores[a]||{score:0}, sb = ubicScores[b]||{score:0};
+    if(sb.score !== sa.score) return sb.score - sa.score;  // más críticos primero
+    return a.localeCompare(b, 'es', { numeric: true });    // alfabético si empatan
   });
 
   // Filtrar por búsqueda
@@ -1442,11 +1459,14 @@ function renderCteoSidebar() {
     var estado = cteoUbicEstado(u);
     var arts = cteoGetArticulos(u);
     var contados = arts.filter(function(r) { return cteo[r.codigo] && cteo[r.codigo].ubic !== ''; }).length;
-    var badgeClass = (estado==='alert') ? 'has-alert' : (estado==='ok') ? 'complete' : '';
-    var badgeTxt   = (estado==='alert') ? '&#9650; diferencia'
-                   : (estado==='ok')    ? '&#10003; ok'
-                   : (estado==='parcial') ? '&#9888; parcial'
-                   : contados+'/'+arts.length;
+    var sc = ubicScores[u]||{score:0,nCrit:0,nImp:0};
+    var badgeClass = sc.nCrit>0 ? 'has-alert' : (estado==='ok') ? 'complete' : '';
+    var badgeTxt = sc.nCrit>0
+      ? '&#9650; '+sc.nCrit+' crit.'
+      : sc.nImp>0
+        ? '&#128230; '+sc.nImp+' pulm.'
+        : (estado==='ok') ? '&#10003; ok'
+        : contados+'/'+arts.length;
     var isActive = u === cteoUbicActiva;
     html += '<div class="cteo-ubic-item' + (isActive ? ' active' : '') + '" onclick="cteoSelectUbic(\'' + esc(u) + '\')">' +
       '<div class="cteo-ubic-name">' + renderUbic(u, dep) + '</div>' +
@@ -1513,18 +1533,16 @@ function renderCteoPanel(ubic) {
     var val   = cteo[r.codigo][campo];
     var sis   = cr.sis;
 
-    // Diferencia a mostrar
+    // Diferencia: contado vs sistema (se muestra apenas hay conteo, incluso si sis=0)
     var diff = null, diffHtml = '';
-    if(!esPulmon && cr.contUbic !== null && sis !== null){
-      diff = cr.contUbic - sis;
-    }
-    if(esPulmon && cr.contPul !== null && sis !== null){
-      diff = cr.contPul - sis;
+    var contadoVal = esPulmon ? cr.contPul : cr.contUbic;
+    if(contadoVal !== null && sis !== null){
+      diff = contadoVal - sis;
     }
     if(diff !== null){
-      if(diff===0)      diffHtml='<span class="cteo-diff zero">= 0</span>';
-      else if(diff<0)   diffHtml='<span class="cteo-diff neg">'+diff+'</span>';
-      else              diffHtml='<span class="cteo-diff pos">+'+diff+'</span>';
+      if(diff===0)    diffHtml='<span class="cteo-diff zero">= 0</span>';
+      else if(diff<0) diffHtml='<span class="cteo-diff neg">'+diff+'</span>';
+      else            diffHtml='<span class="cteo-diff pos">+'+diff+'</span>';
     } else {
       diffHtml='<span class="cteo-diff empty">&#8212;</span>';
     }
@@ -1547,9 +1565,25 @@ function renderCteoPanel(ubic) {
       normal:     ''
     };
 
-    var nivel = esPulmon
-      ? (cr.hayDiffPulGrande ? 'importante' : cr.hayDiffPulLeve ? 'leve' : cr.contPul!==null?'ok':'normal')
-      : cr.nivel;
+    // Nivel para semaforo: basado en diferencia real, no en stock del sistema
+    // sis=0 sin conteo = no contar (normal), no critico
+    var nivel;
+    if(esPulmon){
+      nivel = cr.hayDiffPulGrande ? 'importante' : cr.hayDiffPulLeve ? 'leve' : cr.contPul!==null ? 'ok' : 'normal';
+    } else {
+      // Si hay diferencia detectada (contado ≠ sistema) → critico
+      if(cr.hayDiffUbic)      nivel = 'critico';
+      // Negativo en sistema → critico
+      else if(cr.negativo)    nivel = 'critico';
+      // 80/20
+      else if(cr.regla8020)   nivel = 'skip';
+      // Contado y coincide → ok
+      else if(cr.contUbic !== null && diff === 0) nivel = 'ok';
+      // Sin contar, stock 0 → normal (no hay nada que contar)
+      else if(sis === 0)      nivel = 'normal';
+      // Sin contar, stock positivo → normal
+      else                    nivel = 'normal';
+    }
 
     var rowStyle = nivelStyle[nivel]||'';
     var icon     = nivelIcon[nivel]||'';
